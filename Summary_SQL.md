@@ -39,7 +39,10 @@ ACID:
 
 * 行锁：  
   修改某一行数据时施加的锁(隐式获取)，粒度较小。事务中使用两阶段锁，即随时可以获得锁，但是统一在commit或rollback时释放锁。如在事务A中update某一行，未提交前，在另一个事务B中update这行会阻塞。  
-  select for update / select lock in shared mode则显示的获取锁，应当尽量避免使用，select for update总能通过修改update语句来避免。
+  select for update / select lock in shared mode则显式的获取锁，应当尽量避免使用，select for update总能通过修改update语句来避免。  
+  InnoDB行锁是通过给索引上的索引项加锁来实现的，这一点 MySQL 与 Oracle 不同，后者是通过在数据块中对相应数据行加锁来实现的。InnoDB 这种行锁实现特点意味着：只有通过索引条件检索数据，InnoDB 才使用行级锁，否则，InnoDB 将使用表锁。  
+  不论是使用主键索引、唯一索引或普通索引，InnoDB 都会使用行锁来对数据加锁。  
+  只有执行计划真正使用了索引，才能使用行锁：即便在条件中使用了索引字段，但是否使用索引来检索数据是由 MySQL 通过判断不同执行计划的代价来决定的，如果 MySQL 认为全表扫描效率更高，比如对一些很小的表，它就不会使用索引，这种情况下 InnoDB 将使用表锁，而不是行锁。  
 
 * MVCC多版本并发控制(行级锁)：  
   MySQL中的MVCC实际只实现非阻塞读，即读读，读写不阻塞，而写写是阻塞的，使用排它锁。  
@@ -50,11 +53,31 @@ ACID:
 * 间隙锁(next-key locking)：  
   实际上间隙锁(gap lock)只是锁住区间，next-key locking是gap lock + record lock。next-key locking是为了解决幻读问题，首先要弄清一个概念，上边说的MVCC已经可以保证一个事务中的select不会产生幻读，同时也不会阻塞其他事务对区间的insert/update等操作，但是这只是保证了"快照读"不会产生幻读。但是MVCC无法对写(也就是"当前读")生效，如果事务A要在区间内insert，事务B也要在这个区间内update，普通的RR原则上B是可以感知到A的修改的(也就是B发现update的数据行多了A新插入的一行)，也就是"当前读"产生了幻读，因为MVCC和行锁不能消除幻读的影响。但是MySQL是解决了幻读的，方法就是不仅对行上锁，在进行"当前读"时给索引的对应区间也上锁(gap lock)从而不会出现幻读。  
 
-* MVCC与乐观锁(如何将乐观锁用于数据库？)  
+* [MVCC与乐观锁](<https://www.zhihu.com/question/27876575>)(如何将乐观锁用于数据库？)  
   首先MVCC利用基于快照的多版本方式处理的是读写阻塞的问题。对于写写问题，会和常见的悲观锁如2PL或者乐观锁配合，比如MVCC+2PL或MVCC+OCC，在mysql中使用MVCC+2PL的策略，也就是写写是阻塞的。  
   乐观并发控制一般是基于验证的，通过对额外的列进行验证和原子修改来进行并发控制。比如可以使用隐藏列version或是时间戳timestamp，在写时先保存一下当时的version或timestamp，写在私有临时区域中写，写完之后验证是否满足隔离度，version或是timestamp能否compareAndSet成功，如果满足就写commit写数据，否则就回滚。  
   上边说的是数据库底层的并发控制。  
   还有一个业务场景中会出现先select一个字段，然后对这个字段进行复杂的逻辑处理计算一个新值，然后update这个新值。由于select阶段是基于快照不阻塞的，因此虽然整个事务已经会满足MYSQL的隔离度，但可能出现业务上不希望出现的覆盖修改。首先尽量避免这么写，如果没办法调整为单条update语句解决的话，一种方法是显式的加select for update锁，但是这相当于扩大了锁的范围。另一种办法是，显式的增加一列冗余列如version或是timestamp，select时不加显式锁，在update的where中比较version是否被修改过了，如果和select时相同就写成功，不相同就写失败。这种方式有点乐观的思路，不扩大锁的范围，底层还是依赖数据库对写的并发控制(不论是加锁还是OCC)。  
+
+## [LOG与持久性D](<https://zhuanlan.zhihu.com/p/98778890>)  
+
+MySQL中常见的Log有RedoLog和BinLog。  
+
+* RedoLog  
+  当修改一条记录时，修改的是内存值，此时形成了脏页。如果要把内存值同步修改到磁盘中，太慢了(因为是随机读写)。这时写的是RedoLog，RedoLog存储的是页的物理变化，并且RedoLog是顺序写并且做了优化(组提交)。  
+
+* BINLOG  
+  RedoLog是innodb存储引擎层面实现的，BINLog是MYSQL服务器层面实现的。也就是说，RedoLog只在使用了 innodb 作为存储引擎的 MySQL 上才有，而 binlog，只要你是 MySQL，就会有。  
+  和RedoLog不同，BinLog记录的是数据的逻辑变化，近似的可以理解为记录了SQL语句(类似Redis里的AoF?)  
+  MySQL 通过 BINLOG 录入执行成功的 INSERT、UPDATE、DELETE 等更新数据的 SQL 语句，并由此实现 MySQL 数据库的恢复和主从复制。MySQL 的恢复机制（复制其实就是在 Slave Mysql 不断做基于 BINLOG 的恢复）有以下特点：  
+  一是 MySQL 的恢复是 SQL 语句级的，也就是重新执行 BINLOG 中的 SQL 语句。  
+  二是 MySQL 的 Binlog 是按照事务提交的先后顺序记录的， 恢复也是按这个顺序进行的。  
+  由此可见，MySQL 的恢复机制要求：在一个事务未提交前，其他并发事务不能插入满足其锁定条件的任何记录，也就是不允许出现幻读。  
+
+* 联系  
+  RedoLog是用来在宕机或掉电这种物理情况下保障crash recovery的，也即靠它实现ACID的D。  
+  BinLog是用来人工恢复某个时间的状态(比如不小心清空了库，想要恢复)，以及用来主从同步。  
+  这两个Log的写入依靠，两阶段提交来维护一致性。简略的来说是Redolog(prepare) -> Binlog(write) -> Redolog(commit)  
 
 ## 索引  
 

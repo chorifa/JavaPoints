@@ -113,3 +113,7 @@ FutureTask实现了RunnableFuture接口。内部有一个Callable字段，真正
 它的run()方法为，首先通过CAS将Thread字段设为当前Thread(猜测为了线程安全吧，防止错误使用)，然后运行callable拿到result，如果成功就把outcome字段置为result，失败将outcome置为exception。然后unpark()所有等在这个task上的线程。  
 get()方法首先判断state是不是完成了，完成了返回outcome，没完成粗略的来说就会把自己包装成一个Node(链表形式)，然后park()自己。  
 cancel(mayInterrupted)方法会尝试interrupt执行这个task的线程。  
+
+## CompletableFuture  
+
+CompletableFuture实现的功能很多，其中CompletableFuture#whenComplete(BiConsumer<? super T, ? super Throwable> action)如cf.whenCompete((value, throwable) -> {})方法是由complete这个cf的线程运行的，也可以使用whenCompleteAsync()改成异步的。  

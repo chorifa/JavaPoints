@@ -132,11 +132,33 @@ Integer i = 123 应当等于 Integer i = Integer.valueOf(123);
 
 ## JVM
 
+* vtable  
+  在InstanceKlass的末尾，每一条存放对应的MethodOop地址。子类继承父类的vtable，如果有方法覆盖，则改为自己的MethodOop的地址。如果是新的方法且没有被private，static，final修饰就在vtable中添加一条MethodOop。  
+
+* new一个对象的过程  
+  (要点如下，有空再写)  
+  如果类尚未解析，直接先加载类  
+  1. 类加载  
+    加载，验证，准备，解析，初始化。使用，卸载  
+    通过ClassFilerParser来parse  
+    一般解析常量池创建ConstantPoolKlass等，解析父类和接口，解析类变量和解析类方法创建MethodKlass和MethodOop等。之后创建InstanceKlass，填充内部元素。最后在堆上创建Mirror也就是Class对象。最后JVM会找到\<clinit\>对应的MethodOop来执行初始化。  
+  2. new实例  
+    如果不能栈上分配，则进行TLAB分配  
+    如果TLAB分配不成功(地方不够)，在EDEN上分配  
+    若EDEN失败且符合直接在老年代上分配，在老年代上分配  
+    其中TLAB是在EDEN上的，一块线程私有的区域，这样分配内存可以不用同步  
+    在EDEN上使用CAS的指针碰撞来同步  
+    分配好后，将对象的引用压入操作数栈，待调用过构造函数后，再保存至局部变量表中。  
+
+* Class.forName()和ClassLoader#loadClass()的区别  
+  Class.forName(String s)默认会initialize，还有其他重载方法可以不initialize。  
+  ClassLoader#loadClass(String s)默认的resolve参数为false，不会解析Class文件。  
+
 * JVM的内存模型，其中哪些线程私有哪些线程共有，哪个不会内存溢出  
   按规范有Java堆，方法区(共享)；程序计数器，虚拟机栈和本地方法栈(私有)。其中程序计数器不会溢出。  
   从JDK8开始方法区由Meta-Space实现，是一块直接向OS申请的内存。从实际上看有Java堆，线程栈，JIT代码缓存区，元空间，直接字节缓冲区，GC算法使用的部分等。  
 
-* 如何判断方法区是否溢出
+* 如何判断方法区是否溢出  
   JDK8开始用Meta-Space实现方法区，如果Meta-Space溢出会抛出Oom错误并注明meta space。  
   默认meta-space是不限大小直接向OS申请虚拟内存的，但是如果默认的压缩对象指针和压缩类指针生效(堆大小<32GB)那么meta-space中用于Klass的Class-part默认大小为1G，这个部分是可能会溢出的。通过{java -XX:+PrintFlagsFinal | grep 'CompressedClassSpaceSize'}来查看。一般class-part和non-class-part在1 : 6~8左右。  
   排查的话，可以先用-XX:MaxMetaspaceSize将metaspace设置小一些来重现错误，并且开启VisualVM观察。溢出一般是加载的class太多，超过了size限制。主要关注动态生成类的部分代码。  
@@ -167,18 +189,18 @@ Integer i = 123 应当等于 Integer i = Integer.valueOf(123);
   加载该类的ClassLoader被卸载  
   该类的Class对象没有被引用  
 
-* 堆和栈中各自存放什么东西
+* 堆和栈中各自存放什么东西  
   Java堆中存放Oop对象，如new出来的对象。JDK8后将字符串常量池也放进了堆中，还有JAVA类对应InstanceKlass对应的Mirror对象，也就是Class对象也在堆中，包含类的静态字段等。  
   栈中存放有一系列连续的栈帧，每个栈帧依次包括局部变量表，固定帧和操作数栈。其中局部变量表包括方法入参和局部变量，方法调用方的操作数栈和被调用方的局部变量表有交叠复用。固定帧是一块固定格式的区域，保存有一些当前信息，比如返回地址，methodOop的地址，局部变量表指针，第一条字节码指令的指针，等。操作数栈是用来求值运算的区域。JVM栈中使用的变量类型有double(8B)，word(4B)，short(2B)，byte(1B)和指向堆上对象的引用类型oop(4B/8B)。  
 
-* 如何判定一个对象是否可以回收，哪些可以作为GCRoot
+* 如何判定一个对象是否可以回收，哪些可以作为GCRoot  
   从GCRoot开始进行可行性分析。栈中局部变量表中的引用，方法区中常量或类静态字段引用的对象。  
   当前各线程执行方法中的局部变量（包括形参）引用的对象  
   已被加载的类的 static 域引用的对象  
   方法区中常量引用的对象  
   JNI 引用  
 
-* 垃圾回收介绍，调优
+* 垃圾回收介绍，调优  
 
 * 压缩指针  
   分为2种，一个是对象压缩指针，一个是压缩类指针  
